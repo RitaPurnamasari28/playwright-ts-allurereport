@@ -5,7 +5,7 @@ export default defineConfig({
   globalSetup: './global-setup.ts',
   reporter: [
   ["list"],
-
+/*
   [
     "html",
     {
@@ -13,7 +13,7 @@ export default defineConfig({
       open: "never",
     },
   ],
-
+*/
   [
     "allure-playwright",
     {
