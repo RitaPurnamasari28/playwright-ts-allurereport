@@ -42,18 +42,7 @@ jobs:
           echo "Browser=Chromium" >> allure-results/environment.properties
           echo "OS=${{ runner.os }}" >> allure-results/environment.properties
           echo "Node_Version=20" >> allure-results/environment.properties
-
-      - name: Generate Allure Single File Report
-        if: always()
-        run: npx allure generate allure-results --clean --single-file
-
-      - name: Upload Allure Report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: allure-report
-          path: allure-report
-          
+      
       - name: Add Executor Info to Allure
         if: always()
         run: |
@@ -67,3 +56,15 @@ jobs:
             "buildUrl": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           }
           EOF
+
+      - name: Generate Allure Single File Report
+        if: always()
+        run: npx allure generate allure-results --clean --single-file
+
+      - name: Upload Allure Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report
+          path: allure-report
+        
