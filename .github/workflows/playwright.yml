@@ -34,6 +34,14 @@ jobs:
       - name: Run Test + Generate Allure
         run: npm test
         continue-on-error: true
+      - name: Add Environment Properties to Allure
+        if: always()
+        run: |
+          echo "Environment=Staging" >> allure-results/environment.properties
+          echo "Base_URL=https://automationexercise.com/" >> allure-results/environment.properties
+          echo "Browser=Chromium" >> allure-results/environment.properties
+          echo "OS=${{ runner.os }}" >> allure-results/environment.properties
+          echo "Node_Version=20" >> allure-results/environment.properties
 
       - name: Generate Allure Single File Report
         if: always()
