@@ -53,3 +53,17 @@ jobs:
         with:
           name: allure-report
           path: allure-report
+          
+      - name: Add Executor Info to Allure
+        if: always()
+        run: |
+          cat <<EOF > allure-results/executor.json
+          {
+            "name": "GitHub Actions",
+            "type": "github",
+            "reportName": "Automation Test Report",
+            "buildName": "Run #${{ github.run_number }}",
+            "buildOrder": ${{ github.run_number }},
+            "buildUrl": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }
+          EOF
