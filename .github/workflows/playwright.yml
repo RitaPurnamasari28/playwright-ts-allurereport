@@ -1,0 +1,62 @@
+name: Playwright Allure Test
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+
+jobs:
+  test:
+
+    runs-on: ubuntu-latest
+
+    env:
+      TZ: Asia/Makassar
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+
+      - name: Install dependencies
+        run: npm ci
+
+
+      - name: Install Playwright
+        run: npx playwright install --with-deps
+
+
+      - name: Run Test + Generate Allure
+        run: npm test
+        continue-on-error: true
+
+
+      - name: Upload Allure Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report
+          path: allure-report
+
+
+      - name: Upload Allure Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results
+          path: allure-results
