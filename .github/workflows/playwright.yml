@@ -9,6 +9,10 @@ on:
       - main
   workflow_dispatch:
 
+# Tambahan izin agar otomatis bisa nge-push laporan ke branch gh-pages
+permissions:
+  contents: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -31,18 +35,16 @@ jobs:
       - name: Install Playwright
         run: npx playwright install --with-deps
 
-      - name: Run Test + Generate Allure
+      - name: Run Test
         run: npm test
         continue-on-error: true
+
       - name: Add Environment Properties to Allure
         if: always()
         run: |
           echo "Environment=Staging" >> allure-results/environment.properties
-          echo "Base_URL=https://automationexercise.com/" >> allure-results/environment.properties
-          echo "Browser=Chromium" >> allure-results/environment.properties
           echo "OS=${{ runner.os }}" >> allure-results/environment.properties
-          echo "Node_Version=20" >> allure-results/environment.properties
-      
+
       - name: Add Executor Info to Allure
         if: always()
         run: |
@@ -57,14 +59,28 @@ jobs:
           }
           EOF
 
-      - name: Generate Allure Single File Report
+      - name: Get Allure history
+        uses: actions/checkout@v4
         if: always()
-        run: npx allure generate allure-results --clean --single-file
-
-      - name: Upload Allure Report
-        if: always()
-        uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
-          name: allure-report
-          path: allure-report
-        
+          ref: gh-pages
+          path: gh-pages
+
+      - name: Copy Allure history
+        if: always()
+        run: |
+          mkdir -p allure-results/history
+          cp -R gh-pages/history/* allure-results/history/ || true
+
+      - name: Generate Allure Report
+        if: always()
+        run: npx allure generate allure-results --clean
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        if: always()
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: allure-report
