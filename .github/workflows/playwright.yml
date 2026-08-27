@@ -38,27 +38,7 @@ jobs:
       - name: Run Test
         run: npm test
         continue-on-error: true
-
-      - name: Add Environment Properties to Allure
-        if: always()
-        run: |
-          echo "Environment=Staging" >> allure-results/environment.properties
-          echo "OS=${{ runner.os }}" >> allure-results/environment.properties
-
-      - name: Add Executor Info to Allure
-        if: always()
-        run: |
-          cat <<EOF > allure-results/executor.json
-          {
-            "name": "GitHub Actions",
-            "type": "github",
-            "reportName": "Automation Test Report",
-            "buildName": "Run #${{ github.run_number }}",
-            "buildOrder": ${{ github.run_number }},
-            "buildUrl": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          }
-          EOF
-
+        
       - name: Get Allure history
         uses: actions/checkout@v4
         if: always()
