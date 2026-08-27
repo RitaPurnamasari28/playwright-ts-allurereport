@@ -4,27 +4,20 @@ on:
   push:
     branches:
       - main
-
   pull_request:
     branches:
       - main
-
   workflow_dispatch:
-
 
 jobs:
   test:
-
     runs-on: ubuntu-latest
-
     env:
       TZ: Asia/Makassar
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
-
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -32,19 +25,19 @@ jobs:
           node-version: 20
           cache: npm
 
-
       - name: Install dependencies
         run: npm ci
 
-
       - name: Install Playwright
         run: npx playwright install --with-deps
-
 
       - name: Run Test + Generate Allure
         run: npm test
         continue-on-error: true
 
+      - name: Generate Allure Single File Report
+        if: always()
+        run: npx allure generate allure-results --clean --single-file
 
       - name: Upload Allure Report
         if: always()
@@ -52,7 +45,6 @@ jobs:
         with:
           name: allure-report
           path: allure-report
-
 
       - name: Upload Allure Results
         if: always()
