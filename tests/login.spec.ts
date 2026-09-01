@@ -30,7 +30,7 @@ test("Login with unregistered email", async ({ page }) => {
 
     await home.clickLogin();
   });
-  await test.step("Input unregidtered email, password and click login button", async () => {
+  await test.step("Input unregistered email, password and click login button", async () => {
     await login.login("asdqwe34@gmail.com", "5465765Qwert/-");
   });
   await test.step("Verify alert for email or password is incorrect appear", async () => {
