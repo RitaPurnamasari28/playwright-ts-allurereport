@@ -13,9 +13,9 @@ export class HomePage {
       fullPage: true,
     });
 
-    await expect(
-      this.page.locator("a[href='/login']")
-    ).toBeVisible({ timeout: 60000 });
+    await expect(this.page.locator("a[href='/login']")).toBeVisible({
+      timeout: 60000,
+    });
   }
 
   async clickLogin() {
