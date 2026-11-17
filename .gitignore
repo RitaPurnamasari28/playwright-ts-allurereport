@@ -7,3 +7,5 @@ node_modules/
 reports/
 /allure-report
 /allure-results
+.env
+note.md

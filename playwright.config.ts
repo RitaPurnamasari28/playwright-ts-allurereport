@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import 'dotenv/config';
 
 export default defineConfig({
   workers: 1,
@@ -22,6 +23,7 @@ export default defineConfig({
       suiteTitle: true,
     },
   ],
+  ['./utils/ai-summary-reporter.ts'],
 ],
 
   use:{
