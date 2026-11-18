@@ -6,6 +6,7 @@ export default defineConfig({
   globalSetup: './global-setup.ts',
   reporter: [
   ["list"],
+  
 /*
   [
     "html",

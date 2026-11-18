@@ -21,6 +21,9 @@ test("Checkout flow", async ({ page }) => {
 
     await login.login("testingninura@gmail.com", "5465765Qwert/-");
   });
+  await test.step("Verify successful login", async () => {
+    await expect(page.locator("text=Logged in as")).toBeVisible();
+  });
   await test.step("search product, add to cart and proceed to checkout", async () => {
     await page.locator("a[href='/products']").click();
 
@@ -62,6 +65,9 @@ test("checkout 2 items", async ({ page }) => {
     await home.clickLogin();
 
     await login.login("testingninura@gmail.com", "5465765Qwert/-");
+  });
+  await test.step("Verify successful login", async () => {
+    await expect(page.locator("text=Logged in as")).toBeVisible();
   });
   await test.step("search product first product and add to cart", async () => {
     await page.locator("a[href='/products']").click();
@@ -111,6 +117,9 @@ test("Checkout without input payment details", async ({ page }) => {
 
     await login.login("testingninura@gmail.com", "5465765Qwert/-");
   });
+  await test.step("Verify successful login", async () => {
+    await expect(page.locator("text=Logged in as")).toBeVisible();
+  });
   await test.step("search product, add to cart and proceed to checkout", async () => {
     await page.locator("a[href='/products']").click();
 
@@ -152,6 +161,9 @@ test("Checkout without input card number", async ({ page }) => {
     await home.clickLogin();
 
     await login.login("testingninura@gmail.com", "5465765Qwert/-");
+  });
+  await test.step("Verify successful login", async () => {
+    await expect(page.locator("text=Logged in as")).toBeVisible();
   });
   await test.step("search product, add to cart and proceed to checkout", async () => {
     await page.locator("a[href='/products']").click();
@@ -195,6 +207,9 @@ test("Checkout without input order message", async ({ page }) => {
     await home.clickLogin();
 
     await login.login("testingninura@gmail.com", "5465765Qwert/-");
+  });
+  await test.step("Verify successful login", async () => {
+    await expect(page.locator("text=Logged in as")).toBeVisible();
   });
   await test.step("search product, add to cart and proceed to checkout", async () => {
     await page.locator("a[href='/products']").click();

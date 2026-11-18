@@ -15,6 +15,9 @@ test("Logout", async ({ page }) => {
   await test.step("Input email, password and click login button", async () => {
     await login.login("testingninura@gmail.com", "5465765Qwert/-");
   });
+  await test.step("Verify successful login", async () => {
+    await expect(page.locator("text=Logged in as")).toBeVisible();
+  });
   await test.step("Click logout button and verify logout success", async () => {
     await home.clickLogout();
 

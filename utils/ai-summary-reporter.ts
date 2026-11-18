@@ -1,4 +1,4 @@
-import type { Reporter, FullResult, TestCase, TestResult } from '@playwright/test/reporter';
+import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -6,7 +6,9 @@ import * as crypto from 'crypto';
 interface FailedTestInfo {
   title: string;
   file: string;
+  executedSteps: string[];
   error: string;
+  domSnapshot?: string;
 }
 
 interface FailureAnalysisItem {
@@ -18,55 +20,76 @@ interface FailureAnalysisItem {
 
 class AISummaryReporter implements Reporter {
   private failedTests: FailedTestInfo[] = [];
-  private passedCount = 0;
+  private passedTests: string[] = [];
 
   private getApiKey(): string | undefined {
     const envPath = path.resolve(process.cwd(), '.env');
     if (fs.existsSync(envPath)) {
       const content = fs.readFileSync(envPath, 'utf-8').replace(/\u0000/g, '');
       const match = content.match(/GEMINI_API_KEY\s*=\s*([^\r\n]+)/);
-      if (match) {
-        return match[1].replace(/["'\s]/g, '');
-      }
+      if (match) return match[1].replace(/["'\s]/g, '');
     }
 
-    if (process.env.GEMINI_API_KEY) {
-      return process.env.GEMINI_API_KEY.replace(/["'\s]/g, '');
-    }
-
-    return undefined;
+    return process.env.GEMINI_API_KEY?.replace(/["'\s]/g, '');
   }
 
   onTestEnd(test: TestCase, result: TestResult) {
+    const fileName = path.basename(test.location.file);
+
     if (result.status === 'passed') {
-      this.passedCount++;
-    } else if (result.status === 'failed' || result.status === 'timedOut') {
-      const rawError = result.error?.message || 'Unknown error';
-      const cleanError = rawError
+      this.passedTests.push(`${fileName} - ${test.title}`);
+    } else if ((result.status === 'failed' || result.status === 'timedOut') && result.retry === test.retries) {
+      const cleanError = (result.error?.message || 'Unknown error')
         .replace(/\u001b\[[0-9;]*m/g, '')
         .replace(/(token|password|authorization)["':=\s]+[^\s"']+/gi, '$1=***')
-        .slice(0, 800);
+        .slice(0, 1000);
+
+      const allActionSteps: string[] = [];
+      const collectSteps = (steps: TestResult['steps']) => {
+        for (const s of steps) {
+          if (s.category === 'test.step' || s.category === 'pw:api') {
+            allActionSteps.push(`${s.title} (${s.error ? 'FAILED' : 'PASSED'})`);
+          }
+          if (s.steps?.length) collectSteps(s.steps);
+        }
+      };
+      collectSteps(result.steps);
+
+      let domSnapshot: string | undefined;
+      const contextAttachment = result.attachments.find(
+        (a) => (a.name === 'error-context' || a.contentType === 'text/markdown') && a.path && fs.existsSync(a.path)
+      );
+      if (contextAttachment?.path) {
+        domSnapshot = fs
+          .readFileSync(contextAttachment.path, 'utf-8')
+          .replace(/(token|password|authorization)["':=\s]+[^\s"']+/gi, '$1=***')
+          .replace(/\n\s*\n/g, '\n')
+          .trim()
+          .slice(0, 3500);
+      }
 
       this.failedTests.push({
         title: test.title,
-        file: path.basename(test.location.file),
+        file: fileName,
+        executedSteps: allActionSteps.slice(-6),
         error: cleanError,
+        domSnapshot,
       });
     }
   }
 
-  async onEnd(result: FullResult) {
+  async onEnd() {
     const allureDir = path.resolve(process.cwd(), 'allure-results');
     if (!fs.existsSync(allureDir)) fs.mkdirSync(allureDir, { recursive: true });
 
-    if (this.failedTests.length === 0) {
-      const zeroFailDesc = `Release Status: GO (${this.passedCount}/${this.passedCount} Tests Passed - 100%)\nAll test flows executed smoothly with zero failures.`;
+    const passedCount = this.passedTests.length;
 
+    if (this.failedTests.length === 0) {
       this.writeAllureOutputs(
         allureDir,
-        `GO - All ${this.passedCount} tests passed (100%)`,
+        `GO - All ${passedCount} tests passed (100%)`,
         'No failures detected',
-        zeroFailDesc,
+        `Release Status: GO (${passedCount}/${passedCount} Tests Passed - 100%)\nAll test flows executed smoothly with zero failures.`,
         []
       );
       return;
@@ -82,39 +105,50 @@ class AISummaryReporter implements Reporter {
     );
   }
 
-  private async sleep(ms: number) {
+  private sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private async getAISummaryWithFallback() {
     const apiKey = this.getApiKey();
     const totalFailed = this.failedTests.length;
-    const totalTests = this.passedCount + totalFailed;
-    const passRate = totalTests > 0 ? ((this.passedCount / totalTests) * 100).toFixed(1) : '0';
+    const passedCount = this.passedTests.length;
+    const totalTests = passedCount + totalFailed;
+    const passRate = totalTests > 0 ? ((passedCount / totalTests) * 100).toFixed(1) : '0';
     const sampleErrors = this.failedTests.slice(0, 15);
 
     if (!apiKey) {
       return this.buildFallbackSummary('No API Key configured');
     }
 
-    const prompt = `You are a Senior QA Automation Engineer. Analyze ${totalFailed} failures out of ${totalTests} total Playwright tests (Pass rate: ${passRate}%).
-Provide thorough, practical, and specific engineering insights in English. Do not use any emojis.
+    const prompt = `You are a Principal QA Automation Engineer reviewing a Playwright test run (${passedCount} passed, ${totalFailed} failed, Pass rate: ${passRate}%).
+Analyze each failure accurately using the error log, executed steps, and the captured page DOM snapshot ("domSnapshot").
+
+CRITICAL RULES:
+1. READ "domSnapshot" CAREFULLY! It shows the exact URL and UI elements rendered when the test failed. Check if a search keyword returned zero products, if a login/checkout modal blocked the flow, or if a validation message appeared on screen.
+2. Correlate "domSnapshot" with "executedSteps". If a search returned empty results, categorize as "Test Data / Auth" (invalid search keyword) rather than "Locator". If a checkout failed on a login modal, point out the unauthenticated session.
+3. Check for cascading failures across tests (e.g., if deleteAccount.spec.ts passed, it likely deleted the shared user needed by login/products tests).
+4. Only group failures if they truly share the EXACT same root cause.
+5. Never give generic advice like "increase timeout" or "add networkidle" unless it is strictly a network error like ERR_CONNECTION_RESET.
+6. Keep every sentence short, direct, and crystal-clear. Do not use any emojis.
 
 Return ONLY valid JSON with these 4 keys:
-1. "envSummary": 1 concise sentence stating the HOLD status, pass rate, and primary broken features.
-2. "envRootCause": 1 concise sentence summarizing the root cause categories across the suite.
-3. "impactSummary": 2 sentences explaining which end-to-end user journeys are blocked and the business/release risk.
-4. "items": Array of objects for each failed scenario (or tightly related group) with these exact 4 string keys:
-   - "specAndScenario": Format as "filename.spec.ts - Test Scenario Name"
-   - "category": One of "Product Bug", "Test Data", "Locator", or "Timeout"
-   - "analysis": 2-3 detailed sentences explaining specifically what failed (mention the exact locator, assertion, or timeout behavior from the log), why it likely occurred (e.g., preceding login step failed, DOM changed, slow page load, or backend validation issue), and how it affects downstream steps.
-   - "recommendedFix": 2-3 actionable, specific steps for QA or Developers (e.g., exact selector to inspect, prerequisite state/auth check, wait strategy, or API/DB verification).
+1. "envSummary": Max 12 words stating HOLD status, pass rate, and main broken flow.
+2. "envRootCause": Max 12 words summarizing the primary root cause.
+3. "impactSummary": 1 short sentence explaining which user journeys are blocked and the release risk.
+4. "items": Array of objects with these exact 4 string keys:
+   - "specAndScenario": "filename.spec.ts - Scenario Name"
+   - "category": One of "Test Data / Auth", "UI Overlay / Popup", "Locator", "Product Bug", or "Network / Timeout"
+   - "analysis": 1 short, clear sentence combining what the page snapshot/logs show and why the step failed.
+   - "recommendedFix": 1 short, actionable sentence on how to fix that specific root cause.
 
-Test Failure Data:
+Passed Tests:
+${JSON.stringify(this.passedTests, null, 2)}
+
+Failed Tests:
 ${JSON.stringify(sampleErrors, null, 2)}`;
 
-    // Coba model utama, lalu otomatis pindah ke model cadangan jika 503/429
-    const models = ['gemini-3.5-flash-lite', 'gemini-2.5-flash'];
+    const models = ['gemini-flash-latest', 'gemini-3-flash-preview', 'gemini-2.5-flash-lite'];
     let lastReason = 'Unknown Error';
 
     for (const model of models) {
@@ -142,29 +176,28 @@ ${JSON.stringify(sampleErrors, null, 2)}`;
             if (!rawText) throw new Error('Empty response');
 
             const parsed = JSON.parse(rawText);
-            const overviewDescription = `Release Status: HOLD (${this.passedCount}/${totalTests} Passed - ${passRate}%)\n\nImpact Summary: ${parsed.impactSummary}`;
-
             return {
               envSummary: parsed.envSummary,
               envRootCause: parsed.envRootCause,
-              overviewDescription,
+              overviewDescription: `Release Status: HOLD (${passedCount}/${totalTests} Passed - ${passRate}%)\n\nImpact Summary: ${parsed.impactSummary}`,
               items: (parsed.items || []) as FailureAnalysisItem[],
             };
           }
 
           lastReason = `API Error HTTP ${response.status} (${model})`;
-          const errBody = await response.text();
-          console.warn(`[AISummaryReporter] ${model} attempt ${attempt} failed (${response.status}):`, errBody);
-
+          if (response.status === 404) break;
           if (response.status === 503 || response.status === 429 || response.status === 500) {
             await this.sleep(2500 * attempt);
             continue;
           }
 
-          // Jika error 400/401/403 (masalah API key), langsung hentikan retry
           return this.buildFallbackSummary(lastReason);
         } catch (err: any) {
-          lastReason = err?.name === 'TimeoutError' ? 'Request Timeout (>25s)' : (err?.message || 'Network Unreachable');
+          const causeMsg = err?.cause?.code || err?.cause?.message || '';
+          lastReason =
+            err?.name === 'TimeoutError'
+              ? 'Request Timeout (>25s)'
+              : `${err?.message || 'Network Unreachable'}${causeMsg ? ` (${causeMsg})` : ''}`;
           if (attempt < 2) {
             await this.sleep(2500 * attempt);
             continue;
@@ -178,20 +211,24 @@ ${JSON.stringify(sampleErrors, null, 2)}`;
 
   private buildFallbackSummary(reason: string) {
     const firstError = this.failedTests[0];
-    const totalTests = this.passedCount + this.failedTests.length;
-    const passRate = totalTests > 0 ? ((this.passedCount / totalTests) * 100).toFixed(1) : '0';
+    const passedCount = this.passedTests.length;
+    const totalTests = passedCount + this.failedTests.length;
+    const passRate = totalTests > 0 ? ((passedCount / totalTests) * 100).toFixed(1) : '0';
 
-    const items: FailureAnalysisItem[] = this.failedTests.map((t) => ({
-      specAndScenario: `${t.file} - ${t.title}`,
-      category: 'Fallback Raw Error',
-      analysis: t.error.split('\n')[0],
-      recommendedFix: 'Check full test trace/screenshot in the respective test suite.',
-    }));
+    const items: FailureAnalysisItem[] = this.failedTests.map((t) => {
+      const lastStep = t.executedSteps.length > 0 ? t.executedSteps[t.executedSteps.length - 1] : 'Test body';
+      return {
+        specAndScenario: `${t.file} - ${t.title}`,
+        category: 'Fallback Raw Error',
+        analysis: `Failed at "${lastStep}": ${t.error.split('\n')[0]}`,
+        recommendedFix: 'Check full test trace/screenshot in the respective test suite.',
+      };
+    });
 
     return {
       envSummary: `HOLD - ${this.failedTests.length} test(s) failed (${reason})`,
       envRootCause: `${firstError.file}: ${firstError.error.split('\n')[0].slice(0, 80)}`,
-      overviewDescription: `Fallback Mode Active (${reason})\nRelease Status: HOLD (${this.passedCount}/${totalTests} Passed - ${passRate}%)`,
+      overviewDescription: `Fallback Mode Active (${reason})\nRelease Status: HOLD (${passedCount}/${totalTests} Passed - ${passRate}%)`,
       items,
     };
   }
@@ -204,13 +241,13 @@ ${JSON.stringify(sampleErrors, null, 2)}`;
     items: FailureAnalysisItem[]
   ) {
     const envPath = path.join(allureDir, 'environment.properties');
-    let existingEnv = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
-
-    existingEnv = existingEnv
-      .split('\n')
-      .filter((line) => !line.startsWith('AI_Summary=') && !line.startsWith('AI_Root_Cause='))
-      .filter((line) => !line.startsWith('AI_PM_Summary=') && !line.startsWith('AI_Dev_Root_Cause='))
-      .join('\n');
+    const existingEnv = fs.existsSync(envPath)
+      ? fs
+          .readFileSync(envPath, 'utf-8')
+          .split('\n')
+          .filter((line) => !line.startsWith('AI_Summary=') && !line.startsWith('AI_Root_Cause='))
+          .join('\n')
+      : '';
 
     const newEnvLines = `${existingEnv.trim()}\nAI_Summary=${envSummary.replace(/[\r\n=]+/g, ' ')}\nAI_Root_Cause=${envRootCause.replace(/[\r\n=]+/g, ' ')}\n`;
     fs.writeFileSync(envPath, newEnvLines.trim() + '\n');
@@ -247,7 +284,7 @@ ${JSON.stringify(sampleErrors, null, 2)}`;
       historyId: 'ai-summary-virtual-test',
       name: 'AI Summary',
       fullName: 'AI Summary',
-      status: 'passed',
+      status: 'unknown',
       stage: 'finished',
       description: overviewDescription,
       steps: executionSteps,
