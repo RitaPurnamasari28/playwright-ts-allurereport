@@ -18,7 +18,7 @@ interface FailureAnalysisItem {
 
 class AISummaryReporter implements Reporter {
   private failedTests: FailedTestInfo[] = [];
-  private passedCount = 0;
+  private passedTests: string[] = [];
 
   private getApiKey(): string | undefined {
     const envPath = path.resolve(process.cwd(), '.env');
@@ -38,8 +38,10 @@ class AISummaryReporter implements Reporter {
   }
 
   onTestEnd(test: TestCase, result: TestResult) {
+    const fileName = path.basename(test.location.file);
+
     if (result.status === 'passed') {
-      this.passedCount++;
+      this.passedTests.push(`${fileName} - ${test.title}`);
     } else if (result.status === 'failed' || result.status === 'timedOut') {
       const rawError = result.error?.message || 'Unknown error';
       const cleanError = rawError
@@ -49,7 +51,7 @@ class AISummaryReporter implements Reporter {
 
       this.failedTests.push({
         title: test.title,
-        file: path.basename(test.location.file),
+        file: fileName,
         error: cleanError,
       });
     }
@@ -59,12 +61,14 @@ class AISummaryReporter implements Reporter {
     const allureDir = path.resolve(process.cwd(), 'allure-results');
     if (!fs.existsSync(allureDir)) fs.mkdirSync(allureDir, { recursive: true });
 
+    const passedCount = this.passedTests.length;
+
     if (this.failedTests.length === 0) {
-      const zeroFailDesc = `Release Status: GO (${this.passedCount}/${this.passedCount} Tests Passed - 100%)\nAll test flows executed smoothly with zero failures.`;
+      const zeroFailDesc = `Release Status: GO (${passedCount}/${passedCount} Tests Passed - 100%)\nAll test flows executed smoothly with zero failures.`;
 
       this.writeAllureOutputs(
         allureDir,
-        `GO - All ${this.passedCount} tests passed (100%)`,
+        `GO - All ${passedCount} tests passed (100%)`,
         'No failures detected',
         zeroFailDesc,
         []
@@ -88,9 +92,10 @@ class AISummaryReporter implements Reporter {
 
   private async getAISummaryWithFallback() {
     const apiKey = this.getApiKey();
+    const passedCount = this.passedTests.length;
     const totalFailed = this.failedTests.length;
-    const totalTests = this.passedCount + totalFailed;
-    const passRate = totalTests > 0 ? ((this.passedCount / totalTests) * 100).toFixed(1) : '0';
+    const totalTests = passedCount + totalFailed;
+    const passRate = totalTests > 0 ? ((passedCount / totalTests) * 100).toFixed(1) : '0';
     const sampleErrors = this.failedTests.slice(0, 15);
 
     if (!apiKey) {
@@ -98,22 +103,30 @@ class AISummaryReporter implements Reporter {
     }
 
     const prompt = `You are a Senior QA Automation Engineer. Analyze ${totalFailed} failures out of ${totalTests} total Playwright tests (Pass rate: ${passRate}%).
-Provide thorough, practical, and specific engineering insights in English. Do not use any emojis.
+Provide accurate, factual, and specific engineering insights in English based strictly on the provided logs. Do not use any emojis.
+
+STRICT ANALYSIS RULES:
+1. Base your diagnosis ONLY on facts present in "Failed Tests" and "Passed Tests". Never invent or guess causes not supported by the error message (for example, do NOT blame "slow server response", "database seeding", or "network idle" unless the error explicitly states a network or API failure).
+2. Compare against "Passed Tests": if standard login or checkout tests in other specs passed, the core feature/backend is working—the failure is isolated to that specific scenario's test data, locator, or UI overlay/popup blocking the element.
+3. Each test in Playwright runs independently unless stated otherwise; do NOT assume a test failed because another separate test failed.
+4. Keep "analysis" and "recommendedFix" concise (1-2 sharp sentences) and directly tied to the exact locator or assertion in the error log.
 
 Return ONLY valid JSON with these 4 keys:
-1. "envSummary": 1 concise sentence stating the HOLD status, pass rate, and primary broken features.
-2. "envRootCause": 1 concise sentence summarizing the root cause categories across the suite.
-3. "impactSummary": 2 sentences explaining which end-to-end user journeys are blocked and the business/release risk.
-4. "items": Array of objects for each failed scenario (or tightly related group) with these exact 4 string keys:
-   - "specAndScenario": Format as "filename.spec.ts - Test Scenario Name"
-   - "category": One of "Product Bug", "Test Data", "Locator", or "Timeout"
-   - "analysis": 2-3 detailed sentences explaining specifically what failed (mention the exact locator, assertion, or timeout behavior from the log), why it likely occurred (e.g., preceding login step failed, DOM changed, slow page load, or backend validation issue), and how it affects downstream steps.
-   - "recommendedFix": 2-3 actionable, specific steps for QA or Developers (e.g., exact selector to inspect, prerequisite state/auth check, wait strategy, or API/DB verification).
+1. "envSummary": 1 concise sentence stating the HOLD status, pass rate, and primary broken scenarios.
+2. "envRootCause": 1 concise sentence summarizing the exact root cause categories across the suite.
+3. "impactSummary": 1-2 sentences explaining the actual scope of the failures without exaggerating if core flows passed in other specs.
+4. "items": Array of objects for each failed scenario with these exact 4 string keys:
+  - "specAndScenario": Format as "filename.spec.ts - Test Scenario Name"
+  - "category": One of "Product Bug", "Test Data", "Locator", "UI Overlay", or "Timeout"
+  - "analysis": 1-2 factual sentences explaining what exact locator/assertion failed and why based strictly on the error message and passed specs context.
+  - "recommendedFix": 1-2 concrete, specific technical steps to fix the exact failing locator, test data, or overlay.
 
-Test Failure Data:
+Passed Tests (for context):
+${JSON.stringify(this.passedTests, null, 2)}
+
+Failed Tests:
 ${JSON.stringify(sampleErrors, null, 2)}`;
 
-    // Coba model utama, lalu otomatis pindah ke model cadangan jika 503/429
     const models = ['gemini-3.5-flash-lite', 'gemini-2.5-flash'];
     let lastReason = 'Unknown Error';
 
@@ -142,7 +155,7 @@ ${JSON.stringify(sampleErrors, null, 2)}`;
             if (!rawText) throw new Error('Empty response');
 
             const parsed = JSON.parse(rawText);
-            const overviewDescription = `Release Status: HOLD (${this.passedCount}/${totalTests} Passed - ${passRate}%)\n\nImpact Summary: ${parsed.impactSummary}`;
+            const overviewDescription = `Release Status: HOLD (${passedCount}/${totalTests} Passed - ${passRate}%)\n\nImpact Summary: ${parsed.impactSummary}`;
 
             return {
               envSummary: parsed.envSummary,
@@ -161,7 +174,6 @@ ${JSON.stringify(sampleErrors, null, 2)}`;
             continue;
           }
 
-          // Jika error 400/401/403 (masalah API key), langsung hentikan retry
           return this.buildFallbackSummary(lastReason);
         } catch (err: any) {
           lastReason = err?.name === 'TimeoutError' ? 'Request Timeout (>25s)' : (err?.message || 'Network Unreachable');
@@ -178,8 +190,9 @@ ${JSON.stringify(sampleErrors, null, 2)}`;
 
   private buildFallbackSummary(reason: string) {
     const firstError = this.failedTests[0];
-    const totalTests = this.passedCount + this.failedTests.length;
-    const passRate = totalTests > 0 ? ((this.passedCount / totalTests) * 100).toFixed(1) : '0';
+    const passedCount = this.passedTests.length;
+    const totalTests = passedCount + this.failedTests.length;
+    const passRate = totalTests > 0 ? ((passedCount / totalTests) * 100).toFixed(1) : '0';
 
     const items: FailureAnalysisItem[] = this.failedTests.map((t) => ({
       specAndScenario: `${t.file} - ${t.title}`,
@@ -191,7 +204,7 @@ ${JSON.stringify(sampleErrors, null, 2)}`;
     return {
       envSummary: `HOLD - ${this.failedTests.length} test(s) failed (${reason})`,
       envRootCause: `${firstError.file}: ${firstError.error.split('\n')[0].slice(0, 80)}`,
-      overviewDescription: `Fallback Mode Active (${reason})\nRelease Status: HOLD (${this.passedCount}/${totalTests} Passed - ${passRate}%)`,
+      overviewDescription: `Fallback Mode Active (${reason})\nRelease Status: HOLD (${passedCount}/${totalTests} Passed - ${passRate}%)`,
       items,
     };
   }
@@ -247,7 +260,7 @@ ${JSON.stringify(sampleErrors, null, 2)}`;
       historyId: 'ai-summary-virtual-test',
       name: 'AI Summary',
       fullName: 'AI Summary',
-      status: 'passed',
+      status: 'unknown',
       stage: 'finished',
       description: overviewDescription,
       steps: executionSteps,
