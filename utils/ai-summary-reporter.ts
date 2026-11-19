@@ -9,6 +9,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 
+interface RawAttachmentInfo {
+  name: string;
+  contentType: string;
+  path?: string;
+  bodyText?: string;
+}
+
 interface FailedTestContext {
   title: string;
   file: string;
@@ -16,6 +23,7 @@ interface FailedTestContext {
   stackTrace: string;
   executedSteps: string[];
   domSnapshot: string;
+  attachment?: RawAttachmentInfo;
 }
 
 interface AIAnalysisItem {
@@ -63,9 +71,25 @@ export default class AISummaryReporter implements Reporter {
     if (result.status === 'failed' || result.status === 'timedOut') {
       const rawError = result.error?.message || 'Unknown error occurred';
       const rawStack = result.error?.stack || '';
-
       const executedSteps = this.extractLastSubSteps(result.steps, 6);
-      const domSnapshot = this.extractDomSnapshot(result);
+
+      // Simpan referensi attachment saja di onTestEnd (tanpa fs.readFileSync saat tes berjalan)
+      const contextAttachment = result.attachments.find(
+        (att) =>
+          att.name === 'error-context' ||
+          (att.contentType === 'text/markdown' && Boolean(att.path))
+      );
+
+      const attachmentInfo: RawAttachmentInfo | undefined = contextAttachment
+        ? {
+            name: contextAttachment.name,
+            contentType: contextAttachment.contentType,
+            path: contextAttachment.path,
+            bodyText: contextAttachment.body
+              ? contextAttachment.body.toString('utf-8')
+              : undefined,
+          }
+        : undefined;
 
       this.failedTests.push({
         title: test.title,
@@ -77,7 +101,8 @@ export default class AISummaryReporter implements Reporter {
           this.stripAnsi(rawStack).slice(0, 800)
         ),
         executedSteps,
-        domSnapshot,
+        domSnapshot: '',
+        attachment: attachmentInfo,
       });
     }
   }
@@ -109,6 +134,12 @@ export default class AISummaryReporter implements Reporter {
       );
       this.updateEnvironmentProperties(allureResultsDir, 'Active (All Passed)');
       return;
+    }
+
+    // Baca file DOM snapshot secara aman setelah semua tes selesai
+    for (const item of this.failedTests) {
+      item.domSnapshot = this.resolveDomSnapshot(item.attachment);
+      delete item.attachment;
     }
 
     const apiKey = process.env.GEMINI_API_KEY;
@@ -168,10 +199,11 @@ export default class AISummaryReporter implements Reporter {
   private extractLastSubSteps(steps: TestStep[], limit: number): string[] {
     const flatSteps: string[] = [];
 
-    const traverse = (stepList: TestStep[]) => {
+    const traverse = (stepList: TestStep[], depth = 0) => {
+      if (depth > 8) return;
       for (const step of stepList) {
         if (step.steps && step.steps.length > 0) {
-          traverse(step.steps);
+          traverse(step.steps, depth + 1);
         } else if (
           step.category === 'pw:api' ||
           step.category === 'test.step' ||
@@ -190,26 +222,17 @@ export default class AISummaryReporter implements Reporter {
     return flatSteps.slice(-limit);
   }
 
-  private extractDomSnapshot(result: TestResult): string {
-    const contextAttachment = result.attachments.find(
-      (att) =>
-        att.name === 'error-context' ||
-        (att.contentType === 'text/markdown' && att.path)
-    );
-
-    if (!contextAttachment) {
+  private resolveDomSnapshot(attachment?: RawAttachmentInfo): string {
+    if (!attachment) {
       return 'No DOM snapshot available.';
     }
 
     try {
       let rawContent = '';
-      if (contextAttachment.body) {
-        rawContent = contextAttachment.body.toString('utf-8');
-      } else if (
-        contextAttachment.path &&
-        fs.existsSync(contextAttachment.path)
-      ) {
-        rawContent = fs.readFileSync(contextAttachment.path, 'utf-8');
+      if (attachment.bodyText) {
+        rawContent = attachment.bodyText;
+      } else if (attachment.path && fs.existsSync(attachment.path)) {
+        rawContent = fs.readFileSync(attachment.path, 'utf-8');
       }
 
       if (!rawContent.trim()) {
@@ -232,65 +255,46 @@ export default class AISummaryReporter implements Reporter {
     passedCount: number,
     passRate: string
   ): Promise<{ summary: AISummaryResponse; usedModel: string }> {
-    const models = [
-      'gemini-2.5-flash',
-      'gemini-flash-latest',
-      'gemini-2.0-flash',
-    ];
+    const models = ['gemini-2.5-flash', 'gemini-flash-latest'];
     const errorLog: string[] = [];
 
     const prompt = this.buildPrompt(passedCount, passRate);
 
     for (const model of models) {
-      const maxAttempts = 2;
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-          const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: {
-                  temperature: 0.1,
-                  responseMimeType: 'application/json',
-                },
-              }),
-            }
-          );
-
-          if (response.status === 404) {
-            errorLog.push(`${model}: HTTP 404`);
-            break; // Skip immediately to next model
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: AbortSignal.timeout(12000), // Batas tunggu maksimal 12 detik per request
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: {
+                temperature: 0.1,
+                responseMimeType: 'application/json',
+              },
+            }),
           }
+        );
 
-          if (!response.ok) {
-            const errText = await response.text();
-            const isTransient = [429, 500, 502, 503, 504].includes(
-              response.status
-            );
-            errorLog.push(`${model}: HTTP ${response.status}`);
-
-            if (isTransient && attempt < maxAttempts) {
-              await this.sleep(1500 * attempt);
-              continue;
-            }
-            break;
-          }
-
-          const data = await response.json();
-          const rawText =
-            data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-          const parsed = this.parseAIJson(rawText);
-
-          return { summary: parsed, usedModel: model };
-        } catch (err: any) {
-          errorLog.push(`${model}: ${err?.message || 'Network error'}`);
-          if (attempt < maxAttempts) {
-            await this.sleep(1500 * attempt);
-          }
+        if (!response.ok) {
+          errorLog.push(`${model}: HTTP ${response.status}`);
+          continue;
         }
+
+        const data = await response.json();
+        const rawText =
+          data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const parsed = this.parseAIJson(rawText);
+
+        return { summary: parsed, usedModel: model };
+      } catch (err: any) {
+        const msg =
+          err?.name === 'TimeoutError'
+            ? 'Request timeout (12s)'
+            : err?.message || 'Network error';
+        errorLog.push(`${model}: ${msg}`);
       }
     }
 
@@ -488,9 +492,5 @@ ${JSON.stringify(payload, null, 2)}`;
         /("?(?:password|passwd|pwd|token|secret|apiKey|api_key|authorization)"?\s*[:=]\s*)"?[^",\s}]+"?/gi,
         '$1"[REDACTED]"'
       );
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

@@ -14,7 +14,7 @@ export default defineConfig({
         suiteTitle: true,
       },
     ],
-    //['./utils/ai-summary-reporter.ts'],
+    ['./utils/ai-summary-reporter.ts'],
   ],
 
   use: {
